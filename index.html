@@ -82,276 +82,288 @@
   let data = Array(31).fill(null);
   let chart;
 
-  // Helpers
-  const fmtUSD = v => '$' + Number(v).toFixed(2);
-  const clamp = (v,min,max) => Math.max(min, Math.min(max, v));
-  const safeDiv = (a,b) => (b && b !== 0) ? (a/b) : 0;
+  <!-- Helpers -->
+const fmtUSD = v => '$' + Number(v).toFixed(2);
+const clamp = (v,min,max) => Math.max(min, Math.min(max, v));
+const safeDiv = (a,b) => (b && b !== 0) ? (a/b) : 0;
 
-  // Storage (harian per bulan/tahun)
-  function storageKey(){
-    const m = (document.getElementById('month').value || 'Bulan').trim();
-    const y = (document.getElementById('year').value || 'Tahun').toString().trim();
-    return `journal_${m}_${y}`;
+// Storage (harian per bulan/tahun)
+function storageKey(){
+  const m = (document.getElementById('month').value || 'Bulan').trim();
+  const y = (document.getElementById('year').value || 'Tahun').toString().trim();
+  return `journal_${m}_${y}`;
+}
+function saveToStorage(){ localStorage.setItem(storageKey(), JSON.stringify(data)); }
+function loadFromStorage(){
+  const saved = localStorage.getItem(storageKey());
+  if(saved){
+    try{ data = JSON.parse(saved); }
+    catch(e){ data = Array(31).fill(null); }
+  } else {
+    data = Array(31).fill(null);
   }
-  function saveToStorage(){ localStorage.setItem(storageKey(), JSON.stringify(data)); }
-  function loadFromStorage(){
-    const saved = localStorage.getItem(storageKey());
-    if(saved){
-      try{ data = JSON.parse(saved); }
-      catch(e){ data = Array(31).fill(null); }
-    } else {
-      data = Array(31).fill(null);
-    }
-  }
+}
 
-  // Header
-  function updateHeader(){
-    const m=document.getElementById('month').value || '';
-    const y=document.getElementById('year').value || '';
-    document.getElementById('title').innerText=`${m} ${y}`;
-  }
-  function reloadData(){
-    updateHeader();
-    loadFromStorage();
+// Header
+function updateHeader(){
+  const m=document.getElementById('month').value || '';
+  const y=document.getElementById('year').value || '';
+  document.getElementById('title').innerText=`${m} ${y}`;
+}
+function reloadData(){
+  updateHeader();
+  loadFromStorage();
+  update();
+}
+
+// Inputs
+function saveDay(){
+  const d=(parseInt(document.getElementById('day').value,10)||0)-1;
+  const p=parseFloat(document.getElementById('pnl').value);
+  if(d>=0 && d<31 && !isNaN(p)){ data[d]=p; update(); }
+}
+function clearDay(){
+  const d=(parseInt(document.getElementById('day').value,10)||0)-1;
+  if(d>=0 && d<31){ data[d]=null; update(); }
+}
+function resetMonth(){
+  if(confirm('Reset semua data bulan ini?')){
+    data = Array(31).fill(null);
+    localStorage.removeItem(storageKey());
     update();
   }
+}
 
-  // Inputs
-  function saveDay(){
-    const d=(parseInt(document.getElementById('day').value,10)||0)-1;
-    const p=parseFloat(document.getElementById('pnl').value);
-    if(d>=0 && d<31 && !isNaN(p)){ data[d]=p; update(); }
+// Metric writers
+function setMetricCurrency(id, value, barMax=100){
+  const el = document.getElementById(id);
+  const bar = document.getElementById(id+'Bar');
+  const v = Number(value || 0);
+  el.classList.remove('green','red');
+  el.classList.add(v >= 0 ? 'green' : 'red');
+  el.innerText = fmtUSD(v);
+  if(bar){
+    bar.style.width = clamp(Math.abs(v), 0, barMax) + '%';
+    bar.style.background = v >= 0 ? '#22c55e' : '#ef4444';
   }
-  function clearDay(){
-    const d=(parseInt(document.getElementById('day').value,10)||0)-1;
-    if(d>=0 && d<31){ data[d]=null; update(); }
+}
+function setMetricPercent(id, value){
+  const el = document.getElementById(id);
+  const bar = document.getElementById(id+'Bar');
+  const v = Number(value || 0);
+  el.classList.remove('green','red');
+  el.classList.add(v >= 0 ? 'green' : 'red');
+  el.innerText = v.toFixed(2) + '%';
+  if(bar){
+    bar.style.width = clamp(Math.abs(v), 0, 100) + '%';
+    bar.style.background = v >= 0 ? '#22c55e' : '#ef4444';
   }
-  function resetMonth(){
-    if(confirm('Reset semua data bulan ini?')){
-      data = Array(31).fill(null);
-      localStorage.removeItem(storageKey());
-      update();
+}
+function setMetricNumber(id, value, scale=12){
+  const el = document.getElementById(id);
+  const bar = document.getElementById(id+'Bar');
+  const v = (value === Infinity) ? Infinity : Number(value || 0);
+  el.classList.remove('green','red');
+  el.classList.add((v === Infinity || v >= 1) ? 'green' : 'red'); // PF>=1 hijau
+  el.innerText = (v === Infinity) ? '∞' : v.toFixed(2);
+  if(bar){
+    const pct = (v === Infinity) ? 100 : clamp(v*scale, 0, 100);
+    bar.style.width = pct + '%';
+    bar.style.background = (v === Infinity || v >= 1) ? '#22c55e' : '#ef4444';
+  }
+}
+
+// Core update
+function update(){
+  // Ambil modal awal dari input
+  const start = parseFloat(document.getElementById('capital').value) || 0;
+  let cap = start;
+  const eq = [];
+
+  let profit=0, loss=0, winDays=0, activeDays=0;
+  let peak=cap, maxDD=0;
+  let winSum=0, lossSum=0, winCount=0, lossCount=0;
+
+  data.forEach(p=>{
+    if(p!=null){
+      activeDays++;
+      cap += p;
+      eq.push(cap);
+      if(p>0){ profit += p; winDays++; winSum += p; winCount++; }
+      else if(p<0){ loss += Math.abs(p); lossSum += Math.abs(p); lossCount++; }
+      peak = Math.max(peak, cap);
+      const ddNow = safeDiv((cap - peak), (peak || 1)); // negative or zero
+      maxDD = Math.min(maxDD, ddNow);
     }
-  }
-
-  // Metric writers
-  function setMetricCurrency(id, value, barMax=100){
-    const el = document.getElementById(id);
-    const bar = document.getElementById(id+'Bar');
-    const v = Number(value || 0);
-    el.classList.remove('green','red');
-    el.classList.add(v >= 0 ? 'green' : 'red');
-    el.innerText = fmtUSD(v);
-    if(bar){
-      bar.style.width = clamp(Math.abs(v), 0, barMax) + '%';
-      bar.style.background = v >= 0 ? '#22c55e' : '#ef4444';
-    }
-  }
-  function setMetricPercent(id, value){
-    const el = document.getElementById(id);
-    const bar = document.getElementById(id+'Bar');
-    const v = Number(value || 0);
-    el.classList.remove('green','red');
-    el.classList.add(v >= 0 ? 'green' : 'red');
-    el.innerText = v.toFixed(2) + '%';
-    if(bar){
-      bar.style.width = clamp(Math.abs(v), 0, 100) + '%';
-      bar.style.background = v >= 0 ? '#22c55e' : '#ef4444';
-    }
-  }
-  function setMetricNumber(id, value, scale=12){
-    const el = document.getElementById(id);
-    const bar = document.getElementById(id+'Bar');
-    const v = (value === Infinity) ? Infinity : Number(value || 0);
-    el.classList.remove('green','red');
-    el.classList.add((v === Infinity || v >= 1) ? 'green' : 'red'); // PF>=1 hijau
-    el.innerText = (v === Infinity) ? '∞' : v.toFixed(2);
-    if(bar){
-      const pct = (v === Infinity) ? 100 : clamp(v*scale, 0, 100);
-      bar.style.width = pct + '%';
-      bar.style.background = (v === Infinity || v >= 1) ? '#22c55e' : '#ef4444';
-    }
-  }
-
-  // Core update
-  function update(){
-    // Ambil modal awal dari input
-    const start = parseFloat(document.getElementById('capital').value) || 0;
-    let cap = start;
-    const eq = [];
-
-    let profit=0, loss=0, winDays=0, activeDays=0;
-    let peak=cap, maxDD=0;
-    let winSum=0, lossSum=0, winCount=0, lossCount=0;
-
-    data.forEach(p=>{
-      if(p!=null){
-        activeDays++;
-        cap += p;
-        eq.push(cap);
-        if(p>0){ profit += p; winDays++; winSum += p; winCount++; }
-        else if(p<0){ loss += Math.abs(p); lossSum += Math.abs(p); lossCount++; }
-        peak = Math.max(peak, cap);
-        const ddNow = safeDiv((cap - peak), (peak || 1)); // negative or zero
-        maxDD = Math.min(maxDD, ddNow);
-      }
-    });
-
-    const net = cap - start;
-    const winRate = activeDays ? (winDays/activeDays)*100 : 0;
-    const pf = loss > 0 ? (profit / loss) : (profit > 0 ? Infinity : 0);
-    const avgWin = winCount ? (winSum/winCount) : 0;
-    const avgLoss = lossCount ? (lossSum/lossCount) : 0;
-    const awlRatio = avgLoss ? (avgWin/avgLoss) : 0;
-    const ddPct = maxDD * 100; // negative or zero
-    const monthlyRet = start ? (((cap/start)-1)*100) : 0;
-
-    setMetricCurrency('net', net, 100);
-    setMetricCurrency('equity', cap, 100);
-    setMetricPercent('winrate', winRate);
-    setMetricPercent('daywin', winRate);
-    setMetricNumber('pf', pf, 12);
-    setMetricNumber('awl', awlRatio, 33);
-
-    renderWeeks();
-    setMetricPercent('dd', ddPct);
-    setMetricPercent('rm', monthlyRet);
-    setMetricPercent('rq', monthlyRet);
-    renderDays();
-    drawChart(eq, start);
-
-    saveToStorage();
-  }
-
-  function renderWeeks(){
-    const w=[0,0,0,0];
-    data.forEach((p,i)=>{ if(p!=null){ const idx=Math.floor(i/7); if(idx<4) w[idx]+=p; }});
-    setMetricCurrency('w1', w[0], 100);
-    setMetricCurrency('w2', w[1], 100);
-    setMetricCurrency('w3', w[2], 100);
-    setMetricCurrency('w4', w[3], 100);
-  }
-
-  // Modifikasi: tampilkan bulan + tahun di label hari
-  function renderDays(){
-    const c=document.getElementById('days'); 
-    c.innerHTML='';
-    const m=document.getElementById('month').value || '';
-    const y=document.getElementById('year').value || '';
-
-    for(let i=0;i<31;i++){
-      const p=data[i];
-      const div=document.createElement('div'); 
-      div.className='day';
-      const label = `Day ${i+1} - ${m} ${y}`;
-      if(p!=null){
-        div.classList.add(p>=0?'win':'loss');
-        div.innerHTML=`${label}<br>${fmtUSD(p)}<br>
-          <button onclick="edit(${i})">Edit</button>
-          <button onclick="removeDay(${i})">Remove</button>`;
-      }else{
-        div.innerHTML=`${label}<br>—`;
-      }
-      c.appendChild(div);
-    }
-  }
-
-  function edit(i){
-    const cur=data[i]??0;
-    const p=parseFloat(prompt('Edit P&L Day '+(i+1), cur));
-    if(!isNaN(p)){ data[i]=p; update(); }
-  }
-  function removeDay(i){ data[i]=null; update(); }
-
-  function drawChart(eq, start){
-    const ctx=document.getElementById('equityChart').getContext('2d');
-    if(chart) chart.destroy();
-    const labels = (eq.length ? eq : [start]).map((_,i)=> (eq.length ? ('Day '+(i+1)) : 'Start'));
-    const points = eq.length ? eq : [start];
-    chart=new Chart(ctx,{
-      type:'line',
-      data:{
-        labels,
-        datasets:[{
-          label:'Equity ($)',
-          data:points,
-          borderColor:'#22c55e',
-          backgroundColor:'rgba(34,197,94,0.12)',
-          borderWidth:2,
-          fill:true,
-          tension:0.3,
-          pointRadius:0
-        }]
-      },
-      options:{
-        responsive:true,
-        plugins:{ legend:{display:false}, tooltip:{ mode:'index', intersect:false } },
-        scales:{ x:{ grid:{ display:false } }, y:{ grid:{ color:'#1f2933' }, ticks:{ color:'#cbd5e1' } } }
-      }
-    });
-  }
-
-  function exportPDF(){
-    const el=document.getElementById('journal');
-    const m=document.getElementById('month').value || 'Bulan';
-    const y=document.getElementById('year').value || 'Tahun';
-    const opt={
-      margin:0.5,
-      filename:`Trading_Journal_${m}_${y}.pdf`,
-      image:{ type:'jpeg', quality:0.98 },
-      html2canvas:{ scale:2 },
-      jsPDF:{ unit:'in', format:'a4', orientation:'portrait' }
-    };
-    html2pdf().set(opt).from(el).save();
-  }
-
-  // Reset Modal Awal (default 1000)
-  function resetCapital(){
-    if(confirm('Reset Modal Awal ke default?')){
-      const capitalInput = document.getElementById('capital');
-      capitalInput.value = 1000;
-      localStorage.setItem('modalAwal', capitalInput.value);
-      update();
-    }
-  }
-
-  // Init
-  window.addEventListener('DOMContentLoaded', ()=>{
-    // Pasang judul dulu
-    updateHeader();
-
-    // Ambil modalAwal dari localStorage (key terpisah)
-    const capitalInput = document.getElementById('capital');
-    const savedCapital = localStorage.getItem('modalAwal');
-    if (savedCapital !== null) {
-      capitalInput.value = savedCapital;
-    } else {
-      localStorage.setItem('modalAwal', capitalInput.value);
-    }
-
-    // Load data harian sesuai bulan/tahun
-    loadFromStorage();
-
-    // Render pertama
-    update();
-
-    // Listeners
-    document.getElementById('month').addEventListener('change', reloadData);
-    document.getElementById('year').addEventListener('change', reloadData);
-
-    // Saat modalAwal diubah, simpan dan update metrik
-    capitalInput.addEventListener('change', function () {
-      localStorage.setItem('modalAwal', this.value);
-      update();
-    });
-
-    // Tombol-tombol
-    document.getElementById('saveDayBtn').addEventListener('click', saveDay);
-    document.getElementById('clearDayBtn').addEventListener('click', clearDay);
-    document.getElementById('resetMonthBtn').addEventListener('click', resetMonth);
-    document.getElementById('resetCapitalBtn').addEventListener('click', resetCapital);
   });
+
+  const net = cap - start;
+  const winRate = activeDays ? (winDays/activeDays)*100 : 0;
+  const pf = loss > 0 ? (profit / loss) : (profit > 0 ? Infinity : 0);
+  const avgWin = winCount ? (winSum/winCount) : 0;
+  const avgLoss = lossCount ? (lossSum/lossCount) : 0;
+  const awlRatio = avgLoss ? (avgWin/avgLoss) : 0;
+  const ddPct = maxDD * 100; // negative atau nol
+  const monthlyRet = start ? (((cap/start)-1)*100) : 0;
+
+  setMetricCurrency('net', net, 100);
+  setMetricCurrency('equity', cap, 100);
+  setMetricPercent('winrate', winRate);
+  setMetricPercent('daywin', winRate);
+  setMetricNumber('pf', pf, 12);
+  setMetricNumber('awl', awlRatio, 33);
+
+  renderWeeks();
+  setMetricPercent('dd', ddPct);
+  setMetricPercent('rm', monthlyRet);
+  setMetricPercent('rq', monthlyRet);
+  renderDays();
+  drawChart(eq, start);
+
+  saveToStorage();
+}
+
+function renderWeeks(){
+  const w=[0,0,0,0];
+  data.forEach((p,i)=>{ if(p!=null){ const idx=Math.floor(i/7); if(idx<4) w[idx]+=p; }});
+  setMetricCurrency('w1', w[0], 100);
+  setMetricCurrency('w2', w[1], 100);
+  setMetricCurrency('w3', w[2], 100);
+  setMetricCurrency('w4', w[3], 100);
+}
+
+// Modifikasi: tampilkan bulan + tahun di label hari
+function renderDays(){
+  const c=document.getElementById('days'); 
+  c.innerHTML='';
+  const m=document.getElementById('month').value || '';
+  const y=document.getElementById('year').value || '';
+
+  for(let i=0;i<31;i++){
+    const p=data[i];
+    const div=document.createElement('div'); 
+    div.className='day';
+    const label = `Day ${i+1} - ${m} ${y}`;
+    if(p!=null){
+      div.classList.add(p>=0?'win':'loss');
+      div.innerHTML=`${label}<br>${fmtUSD(p)}<br>
+        <button onclick="edit(${i})">Edit</button>
+        <button onclick="removeDay(${i})">Remove</button>`;
+    }else{
+      div.innerHTML=`${label}<br>—`;
+    }
+    c.appendChild(div);
+  }
+}
+
+function edit(i){
+  const cur=data[i]??0;
+  const p=parseFloat(prompt('Edit P&L Day '+(i+1), cur));
+  if(!isNaN(p)){ data[i]=p; update(); }
+}
+function removeDay(i){ data[i]=null; update(); }
+
+function drawChart(eq, start){
+  const ctx=document.getElementById('equityChart').getContext('2d');
+  if(chart) chart.destroy();
+  const labels = (eq.length ? eq : [start]).map((_,i)=> (eq.length ? ('Day '+(i+1)) : 'Start'));
+  const points = eq.length ? eq : [start];
+  chart=new Chart(ctx,{
+    type:'line',
+    data:{
+      labels,
+      datasets:[{
+        label:'Equity ($)',
+        data:points,
+        borderColor:'#22c55e',
+        backgroundColor:'rgba(34,197,94,0.12)',
+        borderWidth:2,
+        fill:true,
+        tension:0.3,
+        pointRadius:0
+      }]
+    },
+    options:{
+      responsive:true,
+      plugins:{ legend:{display:false}, tooltip:{ mode:'index', intersect:false } },
+      scales:{ x:{ grid:{ display:false } }, y:{ grid:{ color:'#1f2933' }, ticks:{ color:'#cbd5e1' } } }
+    }
+  });
+}
+
+function exportPDF(){
+  const el=document.getElementById('journal');
+  const m=document.getElementById('month').value || 'Bulan';
+  const y=document.getElementById('year').value || 'Tahun';
+  const opt={
+    margin:0.5,
+    filename:`Trading_Journal_${m}_${y}.pdf`,
+    image:{ type:'jpeg', quality:0.98 },
+    html2canvas:{ scale:2 },
+    jsPDF:{ unit:'in', format:'a4', orientation:'portrait' }
+  };
+  html2pdf().set(opt).from(el).save();
+}
+
+// Reset Modal Awal (default 1000)
+function resetCapital(){
+  if(confirm('Reset Modal Awal ke default?')){
+    const capitalInput = document.getElementById('capital');
+    capitalInput.value = 1000;
+    localStorage.setItem('modalAwal', capitalInput.value);
+    update();
+  }
+}
+
+// Init
+window.addEventListener('DOMContentLoaded', ()=>{
+  // Ambil modalAwal dari localStorage (key terpisah)
+  const capitalInput = document.getElementById('capital');
+  const savedCapital = localStorage.getItem('modalAwal');
+  if (savedCapital !== null) {
+    capitalInput.value = savedCapital;
+  } else {
+    localStorage.setItem('modalAwal', capitalInput.value);
+  }
+
+  // Ambil bulan & tahun tersimpan sebelum load data
+  const savedMonth = localStorage.getItem('bulanTerpilih');
+  const savedYear = localStorage.getItem('tahunTerpilih');
+  if (savedMonth) document.getElementById('month').value = savedMonth;
+  if (savedYear) document.getElementById('year').value = savedYear;
+
+  // Pasang judul sesuai nilai yang diambil
+  updateHeader();
+
+  // Load data harian sesuai bulan/tahun lalu render
+  loadFromStorage();
+  update();
+
+  // Listeners: simpan month/year lalu reload
+  document.getElementById('month').addEventListener('change', function () {
+    localStorage.setItem('bulanTerpilih', this.value);
+    reloadData();
+  });
+  document.getElementById('year').addEventListener('change', function () {
+    localStorage.setItem('tahunTerpilih', this.value);
+    reloadData();
+  });
+
+  // Saat modalAwal diubah, simpan dan update metrik
+  capitalInput.addEventListener('change', function () {
+    localStorage.setItem('modalAwal', this.value);
+    update();
+  });
+
+  // Tombol-tombol
+  document.getElementById('saveDayBtn').addEventListener('click', saveDay);
+  document.getElementById('clearDayBtn').addEventListener('click', clearDay);
+  document.getElementById('resetMonthBtn').addEventListener('click', resetMonth);
+  document.getElementById('resetCapitalBtn').addEventListener('click', resetCapital);
+});
+
 </script>
 </body>
 </html>
+
 
